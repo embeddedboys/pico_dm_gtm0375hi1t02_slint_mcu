@@ -20,13 +20,13 @@ pub mod overclock;
 type Result<T = ()> = core::result::Result<T, DisplayError>;
 
 #[cfg(not(feature = "simulator"))]
-pub struct Pio16BitBus<SM: ValidStateMachine, DC> {
+pub struct Pio8BitBus<SM: ValidStateMachine, DC> {
     tx: Tx<SM>,
     dc: DC,
 }
 
 #[cfg(not(feature = "simulator"))]
-impl<TX, DC> Pio16BitBus<TX, DC>
+impl<TX, DC> Pio8BitBus<TX, DC>
 where
     TX: ValidStateMachine,
     DC: OutputPin,
@@ -43,25 +43,22 @@ where
         Ok(())
     }
 
-    fn write_iter16(&mut self, iter: impl Iterator<Item = u16>) -> Result {
-        for value in iter {
-            self.tx.write(value as u32);
-            while !self.tx.is_empty() {}
-        }
-        Ok(())
+    fn write_pairs(&mut self, iter: impl Iterator<Item = [u8; 2]>) -> Result {
+        use core::iter::once;
+        self.write_iter(iter.flat_map(|[first, second]| once(first).chain(once(second))))
     }
 
     pub fn write_data(&mut self, data: DataFormat<'_>) -> Result {
         match data {
             DataFormat::U8(slice) => self.write_iter(slice.iter().copied()),
-            DataFormat::U16LEIter(iter) => self.write_iter16(iter),
+            DataFormat::U16LEIter(iter) => self.write_pairs(iter.map(u16::to_be_bytes)),
             _ => Err(DisplayError::DataFormatNotImplemented),
         }
     }
 }
 
 #[cfg(not(feature = "simulator"))]
-impl<TX, DC> WriteOnlyDataCommand for Pio16BitBus<TX, DC>
+impl<TX, DC> WriteOnlyDataCommand for Pio8BitBus<TX, DC>
 where
     TX: ValidStateMachine,
     DC: OutputPin,

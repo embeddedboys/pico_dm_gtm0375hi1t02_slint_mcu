@@ -51,7 +51,7 @@ fn main() -> ! {
     use rp2040_hal as hal;
     
     const XOSC_CRYSTAL_FREQ: u32 = 12_000_000; // Typically found in BSP crates
-    use lib::{overclock, Pio16BitBus, ILI9488};
+    use lib::{overclock, Pio8BitBus, ILI9488};
     use overclock::overclock_configs::PLL_SYS_240MHZ;
     use slint::platform::WindowEvent;
 
@@ -124,7 +124,7 @@ fn main() -> ! {
     let wr_pin_id = wr.id().num;
 
     let dc = pins.gpio20.into_push_pull_output();
-    let rst = pins.gpio22.into_push_pull_output();
+    let rst = pins.gpio18.into_push_pull_output();
     let bl = pins.gpio28.into_push_pull_output();
 
     let lcd_d0: Pin<_, FunctionPio0, _> = pins.gpio0.into_function();
@@ -135,14 +135,6 @@ fn main() -> ! {
     let lcd_d5: Pin<_, FunctionPio0, _> = pins.gpio5.into_function();
     let lcd_d6: Pin<_, FunctionPio0, _> = pins.gpio6.into_function();
     let lcd_d7: Pin<_, FunctionPio0, _> = pins.gpio7.into_function();
-    let lcd_d8: Pin<_, FunctionPio0, _> = pins.gpio8.into_function();
-    let lcd_d9: Pin<_, FunctionPio0, _> = pins.gpio9.into_function();
-    let lcd_d10: Pin<_, FunctionPio0, _> = pins.gpio10.into_function();
-    let lcd_d11: Pin<_, FunctionPio0, _> = pins.gpio11.into_function();
-    let lcd_d12: Pin<_, FunctionPio0, _> = pins.gpio12.into_function();
-    let lcd_d13: Pin<_, FunctionPio0, _> = pins.gpio13.into_function();
-    let lcd_d14: Pin<_, FunctionPio0, _> = pins.gpio14.into_function();
-    let lcd_d15: Pin<_, FunctionPio0, _> = pins.gpio15.into_function();
 
     let lcd_d0_pin_id = lcd_d0.id().num;
 
@@ -156,14 +148,6 @@ fn main() -> ! {
         (lcd_d5.id().num, hal::pio::PinDir::Output),
         (lcd_d6.id().num, hal::pio::PinDir::Output),
         (lcd_d7.id().num, hal::pio::PinDir::Output),
-        (lcd_d8.id().num, hal::pio::PinDir::Output),
-        (lcd_d9.id().num, hal::pio::PinDir::Output),
-        (lcd_d10.id().num, hal::pio::PinDir::Output),
-        (lcd_d11.id().num, hal::pio::PinDir::Output),
-        (lcd_d12.id().num, hal::pio::PinDir::Output),
-        (lcd_d13.id().num, hal::pio::PinDir::Output),
-        (lcd_d14.id().num, hal::pio::PinDir::Output),
-        (lcd_d15.id().num, hal::pio::PinDir::Output),
     ];
 
     let (mut pio, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
@@ -171,19 +155,19 @@ fn main() -> ! {
     let (int, frac) = (1, 0); // as slow as possible (0 is interpreted as 65536)
     let (mut sm, _, tx) = rp2040_hal::pio::PIOBuilder::from_installed_program(installed)
         .side_set_pin_base(wr_pin_id)
-        .out_pins(lcd_d0_pin_id, 16)
+        .out_pins(lcd_d0_pin_id, 8)
         .buffers(Buffers::OnlyTx)
         .clock_divisor_fixed_point(int, frac)
         .out_shift_direction(ShiftDirection::Right)
         .autopull(true)
-        .pull_threshold(16)
+        .pull_threshold(8)
         .build(sm0);
     sm.set_pindirs(pindirs);
     sm.start();
 
     info!("PIO block setuped");
 
-    let di = Pio16BitBus::new(tx, dc);
+    let di = Pio8BitBus::new(tx, dc);
     let mut display = ILI9488::new(di, Some(rst), Some(bl), 480, 320);
     display.init(&mut delay).unwrap();
 
@@ -196,8 +180,8 @@ fn main() -> ! {
         clocks.system_clock.freq(),
     );
 
-    let rst_pin = pins.gpio18.into_push_pull_output();
-    let mut touch = ft6236::FT6236::new(rst_pin, i2c).unwrap();
+    let irq_pin = pins.gpio21.into_pull_up_input();
+    let mut touch = tsc2007::TSC2007::new(irq_pin, i2c).unwrap();
     let _ = touch.init(&mut delay);
 
     const HOR_RES: u32 = 480;
@@ -309,51 +293,35 @@ fn main() -> ! {
 }
 
 #[cfg(not(feature = "simulator"))]
-mod ft6236 {
+// FIXME: update tsc2007 read_x, read_y routines.
+mod tsc2007 {
     use cortex_m::delay::Delay;
-    // use defmt::info;
-    use embedded_hal::digital::OutputPin;
+    use defmt::info;
+    use embedded_hal::digital::{InputPin, OutputPin};
     use embedded_hal::i2c::I2c;
 
-    const FT6236_DEF_ADDR: u8 =    0x38;
-    const FT6236_REG_TD_STAT: u8 = 0x02;
-    const FT6236_REG_TP1_XH: u8 =  0x03;
-    // const FT6236_REG_TP1_XL: u8 =  0x04;
-    const FT6236_REG_TP1_YH: u8 =  0x05;
-    // const FT6236_REG_TP1_YL: u8 =  0x06;
+    const TSC2007_DEF_ADDR: u8   = 0x48;
+    const TSC2007_CMD_READ_X: u8 = 0xC0;
+    const TSC2007_CMD_READ_Y: u8 = 0xD0;
 
-    pub struct FT6236<RST: OutputPin, I2C: I2c> {
-        rst: RST,
+    pub struct TSC2007<IRQ: InputPin, I2C: I2c> {
+        irq: IRQ,
         i2c: I2C,
         addr: u8,
     }
 
-    impl<PinE, RST: OutputPin<Error = PinE>, I2C: I2c>
-        FT6236<RST, I2C>
+    impl<PinE, IRQ: InputPin<Error = PinE>, I2C: I2c>
+        TSC2007<IRQ, I2C>
     {
-        pub fn new(rst: RST, i2c: I2C) -> Result<Self, PinE> {
+        pub fn new(irq: IRQ, i2c: I2C) -> Result<Self, PinE> {
             Ok(Self {
-                rst,
+                irq,
                 i2c,
-                addr: FT6236_DEF_ADDR,
+                addr: TSC2007_DEF_ADDR,
             })
         }
 
-        pub fn reset(&mut self, delay_source: &mut Delay) -> Result<(), PinE> {
-            self.rst.set_high()?;
-            delay_source.delay_ms(10);
-            self.rst.set_low()?;
-            delay_source.delay_ms(10);
-            self.rst.set_high()?;
-            delay_source.delay_ms(10);
-            Ok(())
-        }
-
         pub fn init(&mut self, delay_source: &mut Delay) -> Result<(), Error<PinE, I2C::Error>> {
-            self.reset(delay_source).map_err(|e| Error::Pin(e))?;
-
-            /* This ft6236 variant has read only registers,
-             * so we shouldn't do nothing here. */
             Ok(())
         }
 
@@ -373,16 +341,16 @@ mod ft6236 {
         //     Ok(())
         // }
 
-        pub fn is_pressed(&mut self) -> Result<bool, I2C::Error> {
-            Ok(self.read_reg(FT6236_REG_TD_STAT)? > 0)
+        pub fn is_pressed(&mut self) -> Result<bool, PinE> {
+            self.irq.is_low()
         }
 
         pub fn read_x(&mut self) -> Result<u16, I2C::Error> {
-            Ok(self.read_reg_16(FT6236_REG_TP1_YH)?)
+            Ok(self.read_reg_16(TSC2007_CMD_READ_X)?)
         }
 
         pub fn read_y(&mut self) -> Result<u16, I2C::Error> {
-            Ok(320 - (self.read_reg_16(FT6236_REG_TP1_XH)? & 0x1fff))
+            Ok(320 - (self.read_reg_16(TSC2007_CMD_READ_Y)? & 0x1fff))
         }
 
         pub fn read(&mut self) -> Result<Option<(u16, u16)>, Error<PinE, I2C::Error>> {
@@ -397,7 +365,7 @@ mod ft6236 {
                         )))
                     }
                 }
-                Err(_e) => {
+                Err(e) => {
                     Ok(None)
                 }
             }

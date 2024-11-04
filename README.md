@@ -1,4 +1,4 @@
-# Slint porting for Pico_DM_QD3503728
+# Slint porting for Pico_DM_GTM0375HI1T02
 
 ![demo](assets/pico_dm_qd3503728_slint.jpeg)
 
